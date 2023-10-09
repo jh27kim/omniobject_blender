@@ -1,0 +1,8 @@
+/views
+*.json
+*.png
+*.exr
+*.npy
+/assets
+
+.DS_Store
