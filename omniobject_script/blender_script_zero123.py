@@ -31,6 +31,16 @@ import numpy as np
 
 import bpy
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--object_path",
@@ -43,11 +53,13 @@ parser.add_argument(
     "--engine", type=str, default="CYCLES", choices=["CYCLES", "BLENDER_EEVEE"]
 )
 parser.add_argument("--scale", type=float, default=0.8)
-parser.add_argument("--num_images", type=int, default=6)
+parser.add_argument("--num_images", type=int, default=120)
 parser.add_argument("--camera_dist", type=int, default=1.2)
 parser.add_argument('--format', type=str, default='OPEN_EXR', help='Format of files generated. Either PNG or OPEN_EXR')
 parser.add_argument('--color_depth', type=str, default='16', help='Number of bit per channel used for output. Either 8 or 16.')
 parser.add_argument('--depth_scale', type=float, default=1.4, help='Scaling that is applied to depth. Depends on size of mesh. Try out various values until you get a good result. Ignored if format is OPEN_EXR.')
+parser.add_argument("--is_train", type=str2bool, default=None)
+parser.add_argument("--category", type=str, default=None, required=True)
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 args = parser.parse_args(argv)
@@ -79,8 +91,8 @@ bpy.data.objects["Area"].scale[2] = 100
 render.engine = args.engine
 render.image_settings.file_format = "PNG"
 render.image_settings.color_mode = "RGBA"
-render.resolution_x = 512
-render.resolution_y = 512
+render.resolution_x = 128
+render.resolution_y = 128
 render.resolution_percentage = 100
 
 scene.cycles.device = "GPU"
@@ -425,7 +437,8 @@ def setup_camera():
     return cam, cam_constraint
 
 
-def save_images(object_file: str) -> None:
+def save_images(object_file: str,
+                is_train: bool,) -> None:
     """Saves rendered images of the object in the scene."""
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -486,82 +499,170 @@ def save_images(object_file: str) -> None:
 
     randomize_lighting()
     prev_theta = None
-    for i in range(args.num_images):
-        ################# DEBUG #####################
-        if i == 2:
-            break
+    num_sections = 12
+    if is_train:
+        for i in range(args.num_images):
+            # # Circular generation
+            # theta = (i / args.num_images) * math.pi * 2
+            # phi = math.radians(75)
+            
+            # Large baselines
+            # phi = math.radians(random.uniform(45., 90.))
+            # theta = math.radians(random.uniform(0., 360.))
+            # if prev_theta != None:
+            #     theta = prev_theta + random.uniform(-90., 90.)
+            #     theta = math.radians(theta)
+            # else:
+            #     theta_deg = random.uniform(-30, 30)
+            #     theta = math.radians(theta_deg)
+            #     prev_theta = theta_deg
 
-        # # Circular generation
-        # theta = (i / args.num_images) * math.pi * 2
-        # phi = math.radians(60)
-        phi = math.radians(random.uniform(45., 90.)) 
-        if prev_theta != None:
-            theta = prev_theta + random.uniform(-90., 90.)
-            theta = math.radians(theta)
-        else:
-            theta_deg = random.uniform(-30, 30)
-            theta = math.radians(theta_deg)
-            prev_theta = theta_deg
-        
-        distance = random.uniform(1.4, 1.8)
+            # Sections 
+            range_a = (360 / num_sections) * (i % 12)
+            range_b = (360 / num_sections) * ((i+1) % 12)
+            theta = math.radians(random.uniform(range_a, range_b))
+            phi = math.radians(random.uniform(45, 90))
+            
+            # distance = random.uniform(1.4, 1.8)
+            distance = 1.5
 
+            point = (
+                distance * math.sin(phi) * math.cos(theta),
+                distance * math.sin(phi) * math.sin(theta),
+                distance * math.cos(phi)
+            )
+            
+            # # reset_lighting()
+
+            # # if args.camera_dist * math.sin(phi) * math.cos(theta) ==
+            cam.location = point
+            direction = - cam.location
+            rot_quat = direction.to_track_quat('-Z', 'Y')
+            cam.rotation_euler = rot_quat.to_euler()
+
+            # set camera
+            # 2023.09.20 Jaihoon  - sample azimuth / elevation
+            # camera = randomize_camera()
+            intrinsic = get_calibration_matrix_K_from_blender()
+
+            # render the image
+            render_path = os.path.join(args.output_dir, object_uid, f"{i:03d}.png")
+            scene.render.filepath = render_path
+
+            ###################################################
+            depth_file_output.file_slots[0].path = os.path.join(args.output_dir, object_uid, f"{i}")
+
+            # Added
+            # create a file output node and set the path
+            # fileOutput = nodes.new(type="CompositorNodeOutputFile")
+            # fileOutput.base_path = render_path
+            # links.new(invert.outputs[0], fileOutput.inputs[0])
+
+            # np.save(get_depth(), os.path.join(args.output_dir, "depth.npy"))
+            ###################################################
+
+            # 2023.09.21 White background 
+            # bpy.context.scene.render.film_transparent = False
+            # bg_node = bpy.context.scene.world.node_tree.nodes['Background']
+            # bg_node.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)  # RGBA
+
+            bpy.ops.render.render(write_still=True)
+
+            # save camera RT matrix
+            RT = get_3x4_RT_matrix_from_blender(cam)
+            RT_path = os.path.join(args.output_dir, object_uid, f"extrinsic_{i:03d}.npy")
+            np.save(RT_path, RT)
+
+            intrinsic_path = os.path.join(args.output_dir, object_uid, f"intrinsic_{i:03d}.npy")
+            np.save(intrinsic_path, intrinsic)
+
+        saved_dir = os.path.join(args.output_dir, object_uid)
+        for _path in os.listdir(saved_dir):
+            if _path.split(".")[-1] == "exr":
+                num = str(_path[:-8])
+                print(_path, num)
+                newnum = f"{num.zfill(3)}.exr"
+                os.rename(os.path.join(saved_dir, _path), os.path.join(saved_dir, newnum))
+    else:
+        # Render Archimedean spiral for test 
+        test_output_dir = os.path.join(args.output_dir, f"test_{args.category}", object_uid)
+        os.makedirs(test_output_dir, exist_ok=True)
+
+        # Source image 
+        theta = math.radians(0)
+        phi = math.radians(90)
+
+        distance = 1.6 # Just for test now.
         point = (
-            distance * math.sin(phi) * math.cos(theta),
-            distance * math.sin(phi) * math.sin(theta),
-            distance * math.cos(phi)
-        )
+                distance * math.sin(phi) * math.cos(theta),
+                distance * math.sin(phi) * math.sin(theta),
+                distance * math.cos(phi))
         
-        # # reset_lighting()
-
-        # # if args.camera_dist * math.sin(phi) * math.cos(theta) ==
         cam.location = point
-        direction = - cam.location
+        direction = -cam.location
         rot_quat = direction.to_track_quat('-Z', 'Y')
         cam.rotation_euler = rot_quat.to_euler()
 
-        # set camera
-        # 2023.09.20 Jaihoon  - sample azimuth / elevation
-        # camera = randomize_camera()
         intrinsic = get_calibration_matrix_K_from_blender()
 
-        # render the image
-        render_path = os.path.join(args.output_dir, object_uid, f"{i:03d}.png")
+        i = 0
+        render_path = os.path.join(test_output_dir, f"{i:03d}.png")
         scene.render.filepath = render_path
 
-        ###################################################
-        depth_file_output.file_slots[0].path = os.path.join(args.output_dir, object_uid, f"{i}")
-
-        # Added
-        # create a file output node and set the path
-        # fileOutput = nodes.new(type="CompositorNodeOutputFile")
-        # fileOutput.base_path = render_path
-        # links.new(invert.outputs[0], fileOutput.inputs[0])
-
-        # np.save(get_depth(), os.path.join(args.output_dir, "depth.npy"))
-        ###################################################
+        depth_file_output.file_slots[0].path = os.path.join(test_output_dir, f"{i}")
 
         # 2023.09.21 White background 
         # bpy.context.scene.render.film_transparent = False
         # bg_node = bpy.context.scene.world.node_tree.nodes['Background']
         # bg_node.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)  # RGBA
-
         bpy.ops.render.render(write_still=True)
 
-        # save camera RT matrix
         RT = get_3x4_RT_matrix_from_blender(cam)
-        RT_path = os.path.join(args.output_dir, object_uid, f"extrinsic_{i:03d}.npy")
+        RT_path = os.path.join(test_output_dir, f"extrinsic_{i:03d}.npy")
         np.save(RT_path, RT)
 
-        intrinsic_path = os.path.join(args.output_dir, object_uid, f"intrinsic_{i:03d}.npy")
+        intrinsic_path = os.path.join(test_output_dir, f"intrinsic_{i:03d}.npy")
         np.save(intrinsic_path, intrinsic)
 
-    saved_dir = os.path.join(args.output_dir, object_uid)
-    for _path in os.listdir(saved_dir):
-        if _path.split(".")[-1] == "exr":
-            num = int(_path[0])
-            newnum = f"{num:03d}.exr"
-            os.rename(os.path.join(saved_dir, _path), os.path.join(saved_dir, newnum))
+        n_test = 50
+        theta_range = 45
+        phi_range = 30
+        for j in range(1, n_test+1):
+            theta = math.radians(math.cos(math.radians(360.0/n_test * j)) * theta_range)
+            phi = math.radians((90-phi_range//2) - (phi_range//2 * math.sin(math.radians(360.0/n_test * j))))
 
+            point = (
+                distance * math.sin(phi) * math.cos(theta),
+                distance * math.sin(phi) * math.sin(theta),
+                distance * math.cos(phi)
+            )
+
+            cam.location = point
+            direction = -cam.location
+            rot_quat = direction.to_track_quat('-Z', 'Y')
+            cam.rotation_euler = rot_quat.to_euler()
+
+            intrinsic = get_calibration_matrix_K_from_blender()
+
+            render_path = os.path.join(test_output_dir, f"{j:03d}.png")
+            scene.render.filepath = render_path
+
+            depth_file_output.file_slots[0].path = os.path.join(test_output_dir, f"{j}")
+            bpy.ops.render.render(write_still=True)
+
+            RT = get_3x4_RT_matrix_from_blender(cam)
+            RT_path = os.path.join(test_output_dir, f"extrinsic_{j:03d}.npy")
+            np.save(RT_path, RT)
+
+            intrinsic_path = os.path.join(test_output_dir, f"intrinsic_{j:03d}.npy")
+            np.save(intrinsic_path, intrinsic)
+
+        for _path in os.listdir(test_output_dir):
+            if _path.split(".")[-1] == "exr":
+                num = str(_path[:-8])
+                print(_path, num)
+                newnum = f"{num.zfill(3)}.exr"
+                os.rename(os.path.join(test_output_dir, _path), os.path.join(test_output_dir, newnum))
 
 
 def download_object(object_url: str) -> str:
@@ -580,18 +681,19 @@ def download_object(object_url: str) -> str:
 
 
 if __name__ == "__main__":
-    try:
-        start_i = time.time()
-        if args.object_path.startswith("http"):
-            local_path = download_object(args.object_path)
-        else:
-            local_path = args.object_path
-        save_images(local_path)
-        end_i = time.time()
-        print("Finished", local_path, "in", end_i - start_i, "seconds")
-        # delete the object if it was downloaded
-        if args.object_path.startswith("http"):
-            os.remove(local_path)
-    except Exception as e:
-        print("Failed to render", args.object_path)
-        print(e)
+    # try:
+    start_i = time.time()
+    if args.object_path.startswith("http"):
+        local_path = download_object(args.object_path)
+    else:
+        local_path = args.object_path
+    is_train = args.is_train
+    save_images(local_path, is_train)
+    end_i = time.time()
+    print("Finished", local_path, "in", end_i - start_i, "seconds")
+    # delete the object if it was downloaded
+    if args.object_path.startswith("http"):
+        os.remove(local_path)
+    # except Exception as e:
+    #     print("Failed to render", args.object_path)
+    #     print(e)

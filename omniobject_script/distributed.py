@@ -37,9 +37,11 @@ def worker(
     s3: Optional[boto3.client],
 ) -> None:
     while True:
-        item = queue.get()
+        item, is_train = queue.get()
         if item is None:
             break
+
+        print(f"ISTRAIN ISTRAIN ISTRAIN {is_train} ISTRAIN ISTRAIN ISTRAIN ISTRAIN")
 
         # Perform some operation on the item
         print(item, gpu)
@@ -48,6 +50,8 @@ def worker(
             # f" blender-3.2.2-linux-x64/blender -b -P scripts/blender_script.py --"
             f" /Applications/Blender.app/Contents/MacOS/Blender -b -P omniobject_script/blender_script_zero123.py --"
             f" --object_path {item}"
+            f" --is_train {is_train}"
+            f" --category clock"
         )
         print("command: ", command)
         subprocess.run(command, shell=True)
@@ -91,8 +95,13 @@ if __name__ == "__main__":
     # Add items to the queue
     with open(args.input_models_path, "r") as f:
         model_paths = json.load(f)
-    for item in model_paths:
-        queue.put(item)
+    
+    test_index = int(len(model_paths) * 0.8)
+    for i, item in enumerate(model_paths):
+        is_train = True
+        if i > test_index:
+            is_train = False
+        queue.put([item, is_train])
 
     # update the wandb count
     if args.log_to_wandb:
